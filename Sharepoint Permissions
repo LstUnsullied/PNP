@@ -1,0 +1,68 @@
+<#
+   ____  _   _ ____  
+  |  _ \| \ | |  _ \ 
+  | |_) |  \| | |_) |
+  |  __/| |\  |  __/ 
+  |_|   |_| \_|_|    
+
+   PnP PowerShell Script
+   https://pnp.github.io/powershell/
+#>
+
+<#
+Description: Script will list out the group, user name, and permissions for a sharepoint site 
+Author: Jeremy Malone 
+Release Date: 11/5/2025
+Version: 2.0
+
+Version improvements: added folder and title settings for organization. also added in input section for speed 
+
+PLEASE NOTE: at the time of writing this the authenticating account will need to have site admin, site owner and adminrights
+it is also best to use the API labeled "PNP for Sharepoint"
+#>
+<#
+Use these statements if pnp was not previously installed 
+
+Install-Module PnP.PowerShell -Scope CurrentUser
+Update-Module PnP.PowerShell -Scope CurrentUser
+Import-Module PnP.PowerShell -Scope CurrentUser
+#>
+$siteurl = Read-Host "Name the site"
+Connect-PnPOnline -Url "$siteurl" -Interactive -ClientId "143c4418-1086-4bf0-885b-7df95ff6316a"
+
+$csvtitle = ($siteurl.Split("/") | Select-Object -Last 1)
+
+$timestamp = (Get-Date -Format "MM-dd-yy_HH-mm")
+
+$folderpath = "C:\Sharepointpermissions"
+
+    if(-not (Test-Path -Path $folderpath)) {
+        New-Item -ItemType Directory -Path $folderpath -Force
+    }
+
+$groups = Get-PnPGroup
+$permissions = @()
+
+foreach ($group in $groups) {
+    $members = Get-PnPGroupMember -Identity $group.Title
+
+    
+    $groupPermissions = Get-PnPGroupPermissions -Identity $group.Title
+    $permissionNames = $groupPermissions.Name -join ","  
+
+    foreach ($member in $members) {
+        $permissions += [PSCustomObject]@{
+            GroupName    = $group.Title
+            MemberName   = $member.Title
+            Permissions  = $permissionNames
+        }
+    }
+}
+
+$csvpath = Join-Path $folderpath "SPPermissions_${csvtitle}_$timestamp.csv"
+
+$permissions | Export-Csv -Path $csvpath -NoTypeInformation
+
+Write-Host "Permissions list saved to $csvpath"
+
+Disconnect-PnPOnline 
