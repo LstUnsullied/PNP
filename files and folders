@@ -1,0 +1,286 @@
+# ============================================
+# SharePoint PnP - List All Files and Folders for Excel Export
+# ============================================
+
+# Configuration
+$SiteUrl = "https://yourtenant.sharepoint.com/sites/YourSite"
+$ExportPath = "C:\Temp\SharePoint_Files_Export.csv"
+$DocumentLibrary = "Documents"  # Change to your library name
+
+# Connect to SharePoint Online
+Write-Host "Connecting to SharePoint site: $SiteUrl" -ForegroundColor Cyan
+try {
+    Connect-PnPOnline -Url $SiteUrl -Interactive
+    Write-Host "✓ Connected successfully!" -ForegroundColor Green
+}
+catch {
+    Write-Host "✗ Failed to connect: $($_.Exception.Message)" -ForegroundColor Red
+    exit
+}
+
+# ============================================
+# SOLUTION 1: Using ArrayList (Recommended for Large Libraries)
+# ============================================
+
+Write-Host "`nGetting all files and folders from: $DocumentLibrary" -ForegroundColor Cyan
+
+# Use ArrayList for better performance (doesn't recreate array each time)
+$results = [System.Collections.ArrayList]::new()
+
+# Get all items from the document library recursively
+$allItems = Get-PnPListItem -List $DocumentLibrary -PageSize 2000
+
+Write-Host "Found $($allItems.Count) total items. Processing..." -ForegroundColor Yellow
+
+$processedCount = 0
+
+foreach ($item in $allItems) {
+    $processedCount++
+    
+    # Show progress every 100 items
+    if ($processedCount % 100 -eq 0) {
+        Write-Host "  Processed $processedCount of $($allItems.Count) items..." -ForegroundColor Gray
+    }
+    
+    # Create a NEW object for each item (this is the key!)
+    $itemObject = [PSCustomObject]@{
+        ItemID = $item.Id
+        ItemType = $item.FileSystemObjectType  # File or Folder
+        Name = $item.FieldValues.FileLeafRef
+        FilePath = $item.FieldValues.FileRef
+        FolderPath = $item.FieldValues.FileDirRef
+        FileSize = if ($item.FieldValues.File_x0020_Size) { 
+            [math]::Round($item.FieldValues.File_x0020_Size / 1MB, 2) 
+        } else { 0 }
+        FileSizeBytes = $item.FieldValues.File_x0020_Size
+        FileType = $item.FieldValues.File_x0020_Type
+        Created = $item.FieldValues.Created
+        CreatedBy = $item.FieldValues.Author.LookupValue
+        Modified = $item.FieldValues.Modified
+        ModifiedBy = $item.FieldValues.Editor.LookupValue
+        URL = $item.FieldValues.FileRef
+        Level = ($item.FieldValues.FileRef -split '/').Count - 4  # Calculate folder depth
+    }
+    
+    # Add to ArrayList (use [void] to suppress index output)
+    [void]$results.Add($itemObject)
+}
+
+Write-Host "✓ Processing complete! Total items: $($results.Count)" -ForegroundColor Green
+
+# Export to CSV
+$results | Export-Csv -Path $ExportPath -NoTypeInformation -Encoding UTF8
+Write-Host "✓ Exported to: $ExportPath" -ForegroundColor Green
+
+# Display summary
+Write-Host "`n=== SUMMARY ===" -ForegroundColor Magenta
+$fileCount = ($results | Where-Object { $_.ItemType -eq "File" }).Count
+$folderCount = ($results | Where-Object { $_.ItemType -eq "Folder" }).Count
+$totalSizeMB = ($results | Measure-Object -Property FileSize -Sum).Sum
+
+Write-Host "Total Files: $fileCount" -ForegroundColor Cyan
+Write-Host "Total Folders: $folderCount" -ForegroundColor Cyan
+Write-Host "Total Size: $totalSizeMB MB" -ForegroundColor Cyan
+
+# Disconnect
+Disconnect-PnPOnline
+
+# ============================================
+# SOLUTION 2: Recursive Function (For Complex Folder Structures)
+# ============================================
+
+<#
+# Alternative approach using recursive function to traverse folder structure
+
+function Get-SharePointFolderContents {
+    param(
+        [string]$FolderPath,
+        [int]$Level = 0
+    )
+    
+    $results = [System.Collections.ArrayList]::new()
+    
+    try {
+        # Get items in current folder
+        $folderItems = Get-PnPFolderItem -FolderSiteRelativeUrl $FolderPath -ItemType All
+        
+        foreach ($item in $folderItems) {
+            if ($item.GetType().Name -eq "Folder") {
+                # It's a folder
+                $folderObject = [PSCustomObject]@{
+                    ItemType = "Folder"
+                    Name = $item.Name
+                    Path = $item.ServerRelativeUrl
+                    Level = $Level
+                    FileSize = 0
+                    Created = ""
+                    Modified = ""
+                    URL = $item.ServerRelativeUrl
+                }
+                [void]$results.Add($folderObject)
+                
+                # Recursively get contents of this folder
+                $subItems = Get-SharePointFolderContents -FolderPath $item.ServerRelativeUrl -Level ($Level + 1)
+                foreach ($subItem in $subItems) {
+                    [void]$results.Add($subItem)
+                }
+            }
+            else {
+                # It's a file
+                $fileObject = [PSCustomObject]@{
+                    ItemType = "File"
+                    Name = $item.Name
+                    Path = $item.ServerRelativeUrl
+                    Level = $Level
+                    FileSize = [math]::Round($item.Length / 1MB, 2)
+                    Created = $item.TimeCreated
+                    Modified = $item.TimeLastModified
+                    URL = $item.ServerRelativeUrl
+                }
+                [void]$results.Add($fileObject)
+            }
+        }
+    }
+    catch {
+        Write-Host "Error processing folder $FolderPath : $($_.Exception.Message)" -ForegroundColor Red
+    }
+    
+    return $results
+}
+
+# Usage:
+# Connect-PnPOnline -Url $SiteUrl -Interactive
+# $allResults = Get-SharePointFolderContents -FolderPath "Shared Documents"
+# $allResults | Export-Csv -Path "C:\Temp\SharePoint_Recursive.csv" -NoTypeInformation
+# Disconnect-PnPOnline
+#>
+
+# ============================================
+# SOLUTION 3: Filtered Export (Files Only, with Specific Columns)
+# ============================================
+
+<#
+# If you only want files (not folders) with specific columns
+
+Connect-PnPOnline -Url $SiteUrl -Interactive
+
+$filesOnly = [System.Collections.ArrayList]::new()
+$allItems = Get-PnPListItem -List $DocumentLibrary -PageSize 2000
+
+foreach ($item in $allItems) {
+    # Only process files
+    if ($item.FileSystemObjectType -eq "File") {
+        
+        $fileObject = [PSCustomObject]@{
+            FileName = $item.FieldValues.FileLeafRef
+            FolderPath = $item.FieldValues.FileDirRef
+            SizeMB = [math]::Round($item.FieldValues.File_x0020_Size / 1MB, 2)
+            Extension = $item.FieldValues.File_x0020_Type
+            CreatedDate = $item.FieldValues.Created
+            CreatedBy = $item.FieldValues.Author.LookupValue
+            ModifiedDate = $item.FieldValues.Modified
+            ModifiedBy = $item.FieldValues.Editor.LookupValue
+            CheckedOut = $item.FieldValues.CheckoutUser.LookupValue
+            VersionNumber = $item.FieldValues._UIVersionString
+            URL = "$SiteUrl/$($item.FieldValues.FileRef)"
+        }
+        
+        [void]$filesOnly.Add($fileObject)
+    }
+}
+
+$filesOnly | Export-Csv -Path "C:\Temp\SharePoint_FilesOnly.csv" -NoTypeInformation
+Disconnect-PnPOnline
+#>
+
+# ============================================
+# SOLUTION 4: Separate Files and Folders into Different Sheets
+# ============================================
+
+<#
+# Export files and folders to separate CSV files
+
+Connect-PnPOnline -Url $SiteUrl -Interactive
+
+$allItems = Get-PnPListItem -List $DocumentLibrary -PageSize 2000
+
+$files = [System.Collections.ArrayList]::new()
+$folders = [System.Collections.ArrayList]::new()
+
+foreach ($item in $allItems) {
+    if ($item.FileSystemObjectType -eq "File") {
+        $fileObj = [PSCustomObject]@{
+            Name = $item.FieldValues.FileLeafRef
+            Path = $item.FieldValues.FileRef
+            SizeMB = [math]::Round($item.FieldValues.File_x0020_Size / 1MB, 2)
+            Type = $item.FieldValues.File_x0020_Type
+            Modified = $item.FieldValues.Modified
+            ModifiedBy = $item.FieldValues.Editor.LookupValue
+        }
+        [void]$files.Add($fileObj)
+    }
+    else {
+        $folderObj = [PSCustomObject]@{
+            Name = $item.FieldValues.FileLeafRef
+            Path = $item.FieldValues.FileRef
+            Created = $item.FieldValues.Created
+            CreatedBy = $item.FieldValues.Author.LookupValue
+            ItemCount = 0  # You could calculate this
+        }
+        [void]$folders.Add($folderObj)
+    }
+}
+
+$files | Export-Csv -Path "C:\Temp\SharePoint_Files.csv" -NoTypeInformation
+$folders | Export-Csv -Path "C:\Temp\SharePoint_Folders.csv" -NoTypeInformation
+
+Write-Host "Files exported: $($files.Count)"
+Write-Host "Folders exported: $($folders.Count)"
+
+Disconnect-PnPOnline
+#>
+
+# ============================================
+# TROUBLESHOOTING TIPS
+# ============================================
+
+<#
+COMMON ISSUES AND SOLUTIONS:
+
+1. "Array keeps getting rewritten" - CAUSE: Reusing the same object
+   ❌ WRONG:
+   $obj = [PSCustomObject]@{ Name = "" }
+   foreach ($item in $items) {
+       $obj.Name = $item.Name
+       $results += $obj  # All entries reference SAME object!
+   }
+   
+   ✅ CORRECT:
+   foreach ($item in $items) {
+       $obj = [PSCustomObject]@{ Name = $item.Name }  # NEW object each time
+       $results += $obj
+   }
+
+2. "Slow performance with large libraries"
+   ✅ SOLUTION: Use ArrayList instead of regular array
+   $results = [System.Collections.ArrayList]::new()
+   [void]$results.Add($obj)
+
+3. "Missing items or incomplete data"
+   ✅ SOLUTION: Use -PageSize parameter
+   Get-PnPListItem -List $DocumentLibrary -PageSize 2000
+
+4. "Authentication issues"
+   ✅ SOLUTION: Use -Interactive for modern auth
+   Connect-PnPOnline -Url $SiteUrl -Interactive
+
+5. "Want to filter specific file types"
+   ✅ SOLUTION: Add Where-Object filter
+   $results | Where-Object { $_.FileType -in @("docx", "xlsx", "pdf") }
+
+6. "Need folder hierarchy visible in Excel"
+   ✅ SOLUTION: Add Level property (already included in script above)
+#>
+
+Write-Host "`n=== Script Complete ===" -ForegroundColor Magenta
+Write-Host "You can now open the CSV file in Excel for analysis." -ForegroundColor Green
